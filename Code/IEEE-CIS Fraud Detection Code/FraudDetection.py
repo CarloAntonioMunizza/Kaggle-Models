@@ -101,7 +101,6 @@ log_reg_model = LogisticRegression(
     random_state=42,
     class_weight='balanced'
 )
-
 # Fit the model
 log_reg_model.fit(X_train, Y_train)
 
