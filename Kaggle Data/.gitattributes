@@ -1,2 +1,0 @@
-"Kaggle Data/IEEE-CIS Fraud Detection Data/test_transaction.csv" filter=lfs diff=lfs merge=lfs -text
-"Kaggle Data/IEEE-CIS Fraud Detection Data/train_transaction.csv" filter=lfs diff=lfs merge=lfs -text
