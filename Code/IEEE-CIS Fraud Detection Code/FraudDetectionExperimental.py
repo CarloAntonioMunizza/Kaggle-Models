@@ -1,4 +1,5 @@
 # Importing necessary libraries
+from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -7,83 +8,18 @@ from sklearn.metrics import accuracy_score, f1_score
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-import optuna  # Import Optuna
+from FraudDetection import SetPaths, CreateDataFrames, TrainValTestSplit, LogRegInit, GenerateMetrics, GenerateSubmission
 
-# Load data
-root_path = 'C:/Users/carlo/.vscode/Repos/Kaggle Models/Kaggle Data/IEEE-CIS Fraud Detection Data/'
-train_identity_path = root_path + 'train_identity.csv'
-train_transaction_path = root_path + 'train_transaction.csv'
-test_identity_path = root_path + 'test_identity.csv'
-test_transaction_path = root_path + 'test_transaction.csv'
+# Create basic paths
+root_path, train_identity_path, train_transaction_path, test_identity_path, test_transaction_path = SetPaths()
 
-# Read CSV files into DataFrames
-train_identity_data = pd.read_csv(train_identity_path)
-train_transaction_data = pd.read_csv(train_transaction_path)
-test_identity_data = pd.read_csv(test_identity_path)
-test_transaction_data = pd.read_csv(test_transaction_path)
+# Create concatenated dataframes 
+train_combined_data, test_combined_data = CreateDataFrames(train_identity_path, train_transaction_path, test_identity_path, test_transaction_path)
 
-# Check if DataFrames are empty
-for df_name, df in zip(['Train Identity', 'Train Transaction', 'Test Identity', 'Test Transaction'],
-                       [train_identity_data, train_transaction_data, test_identity_data, test_transaction_data]):
-    if df.empty:
-        raise ValueError(f"{df_name} is empty. Please check the file path or file content.")
+# Create train val test splits
+X_train, X_val, Y_train, Y_val, X_test = TrainValTestSplit(train_combined_data, test_combined_data)
 
-# Rename columns to replace underscores with hyphens
-train_identity_data.columns = train_identity_data.columns.str.replace('_', '-', regex=False)
-train_transaction_data.columns = train_transaction_data.columns.str.replace('_', '-', regex=False)
-test_identity_data.columns = test_identity_data.columns.str.replace('_', '-', regex=False)
-test_transaction_data.columns = test_transaction_data.columns.str.replace('_', '-', regex=False)
-
-# Filter identity and transaction data
-train_filtered_identity_data = train_identity_data[train_identity_data['TransactionID'].isin(train_transaction_data['TransactionID'])]
-test_filtered_identity_data = test_identity_data[test_identity_data['TransactionID'].isin(test_transaction_data['TransactionID'])]
-
-train_filtered_transaction_data = train_transaction_data[train_transaction_data['TransactionID'].isin(train_filtered_identity_data['TransactionID'])]
-test_filtered_transaction_data = test_transaction_data[test_transaction_data['TransactionID'].isin(test_filtered_identity_data['TransactionID'])]
-
-# Combine identity and transaction data
-train_combined_data = pd.merge(train_filtered_transaction_data, train_filtered_identity_data, on='TransactionID', how='inner')
-test_combined_data = pd.merge(test_filtered_transaction_data, test_filtered_identity_data, on='TransactionID', how='inner')
-
-# Ensure all columns are numeric and check if 'isFraud' exists
-if 'isFraud' not in train_combined_data.columns:
-    raise ValueError("'isFraud' column not found in the training data.")
-
-# Remove rows with NaN in 'isFraud'
-train_combined_data = train_combined_data.dropna(subset=['isFraud'])
-
-# Extract the relevant features and labels
-X_train_combined_data = train_combined_data.drop(columns=['isFraud', 'TransactionID'])  # Exclude the target and ID
-Y_train_combined_data = train_combined_data['isFraud']
-
-# Convert all data to numeric (this will handle NaNs)
-X_train_combined_data = X_train_combined_data.apply(pd.to_numeric, errors='coerce')
-test_combined_data = test_combined_data.drop(columns=['TransactionID']).apply(pd.to_numeric, errors='coerce')
-
-# Handle infinite values and large values
-X_train_combined_data.replace([np.inf, -np.inf], np.nan, inplace=True)
-test_combined_data.replace([np.inf, -np.inf], np.nan, inplace=True)
-max_value_threshold = 1e10
-X_train_combined_data[X_train_combined_data > max_value_threshold] = max_value_threshold
-test_combined_data[test_combined_data > max_value_threshold] = max_value_threshold
-
-# Handle missing values in X_train_combined_data using SimpleImputer
-imputer = SimpleImputer(strategy='mean')
-
-# Check for columns with no non-missing values
-non_missing_columns = X_train_combined_data.columns[X_train_combined_data.notnull().any()]
-X_train_combined_data_imputed = imputer.fit_transform(X_train_combined_data[non_missing_columns])
-
-# Convert back to DataFrame with the correct column names
-X_train_combined_data_imputed = pd.DataFrame(X_train_combined_data_imputed, columns=non_missing_columns)
-
-# Ensure test_combined_data has the same columns as X_train_combined_data
-test_combined_data_imputed = pd.DataFrame(
-    imputer.transform(test_combined_data[non_missing_columns]),
-    columns=non_missing_columns
-)
-
-# Apply PCA to find the top 10 features
+# Apply PCA
 n_components = 230
 pca = PCA(n_components)
 pca.fit(X_train_combined_data_imputed)
