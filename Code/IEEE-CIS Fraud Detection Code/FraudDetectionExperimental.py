@@ -1,128 +1,106 @@
-# Importing necessary libraries
+# Import necessary libraries
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from FraudDetection import SetPaths, CreateDataFrames, TrainValTestSplit, LogRegInit, GenerateMetrics, GenerateSubmission
+from FraudDetection import SetPaths, CreateDataFrames, LogRegInit, GenerateMetrics, GBXParamsInit, GenerateSubmission
+import xgboost as xgb
 
 # Create basic paths
 root_path, train_identity_path, train_transaction_path, test_identity_path, test_transaction_path = SetPaths()
 
-# Create concatenated dataframes 
+# Create concatenated dataframes
 train_combined_data, test_combined_data = CreateDataFrames(train_identity_path, train_transaction_path, test_identity_path, test_transaction_path)
 
-# Create train val test splits
-X_train, X_val, Y_train, Y_val, X_test = TrainValTestSplit(train_combined_data, test_combined_data)
+# Separate target and features
+X_train_combined_data = train_combined_data.drop(['isFraud', 'TransactionID'], axis=1)
+Y_train_combined_data = train_combined_data['isFraud']
+
+# Extract TransactionID for submission purposes
+transaction_ids = test_combined_data['TransactionID']
+
+# Prepare test data without 'TransactionID'
+X_test_combined_data = test_combined_data.drop('TransactionID', axis=1)
 
 # Apply PCA
-n_components = 230
+n_components = 370
 pca = PCA(n_components)
-pca.fit(X_train_combined_data_imputed)
+X_train_pca = pca.fit_transform(X_train_combined_data)
+X_test_pca = pca.transform(X_test_combined_data)
 
-# Get the PCA components and feature importance
-explained_variance = pca.explained_variance_ratio_
-top_indices = np.argsort(-explained_variance)[:n_components]  # Get indices of the top components
-top_features = X_train_combined_data_imputed.columns[top_indices]
-
-# Use the top components for training
-X_train_top_features = X_train_combined_data_imputed[top_features]
-X_val_top_features = test_combined_data_imputed[top_features]
+# Train-test split
+X_train, X_val, Y_train, Y_val = train_test_split(
+    X_train_pca, Y_train_combined_data, test_size=0.2, stratify=Y_train_combined_data, random_state=1
+)
 
 # Standardize features
 scaler = StandardScaler()
-X_train_top_features = scaler.fit_transform(X_train_top_features)
-X_val_top_features = scaler.transform(X_val_top_features)
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
+X_test = scaler.transform(X_test_pca)
 
-# Train-test split (use the same features)
-X_train, X_val, Y_train, Y_val = train_test_split(
-    X_train_top_features, Y_train_combined_data, test_size=0.2, stratify=Y_train_combined_data, random_state=1
-)
+# Train Logistic Regression model
+xgb_model = xgb.XGBClassifier()
+GBXParams = GBXParamsInit()
 
-# Define the objective function for Optuna
-#def objective(trial):
-#    # Suggest hyperparameters
-#    C = trial.suggest_float('C', 1e-4, 1e2, log=True)  # Use suggest_float instead of suggest_loguniform
-#    max_iter = trial.suggest_int('max_iter', 500, 1000)  # Maximum number of iterations
-#    solver = trial.suggest_categorical('solver', ['lbfgs', 'liblinear', 'saga'])  # Optimization algorithm
-#
-#    # Initialize and train the logistic regression model
-#    log_reg_model = LogisticRegression(
-#        penalty='l2',
-#        C=C,
-#        solver=solver,
-#        max_iter=max_iter,
-#        random_state=42,
-#        class_weight='balanced',
-#        n_jobs=-1  # Use all CPU cores
-#    )
-#
-#    # Fit the model
-#    log_reg_model.fit(X_train, Y_train)
-#
-#    # Predict and evaluate on validation set
-#    Y_pred_val = log_reg_model.predict(X_val)
-#    f1_val = f1_score(Y_val, Y_pred_val)
-#    
-#    return f1_val  # Return the F1 score as the objective value
-#
-#
-# 
-# Create an Optuna study and optimize
-#
-#study = optuna.create_study(direction='maximize')
-#study.optimize(objective, n_trials=50)  # Number of trials
+# Set the parameters for Grid Search
+param_grid = {
+    'max_depth': [3, 5, 7],
+    'learning_rate': [0.01, 0.1, 0.3],
+    'n_estimators': [100, 200],
+    'scale_pos_weight': [1, 5, 10]  # Adjust for class imbalance
+}
 
-# Print the best hyperparameters
-#print("Best hyperparameters: ", study.best_params)
-#print("Best F1 Score: ", study.best_value)
+# Perform grid search
+grid_search = GridSearchCV(xgb_model, param_grid, scoring='f1', cv=3)
+grid_search.fit(X_train, Y_train)
 
-# Make predictions for the test set with the best parameters
-#best_params = study.best_params
+best_params = grid_search.best_params_
 
-log_reg_model = LogisticRegression(
-    penalty='l2',
-    C=1e2,
-    solver='liblinear',
-    max_iter=1000,
-    random_state=42,
-    class_weight='balanced'
-)
+# Best parameters
+print("Best parameters found: ", best_params)
 
-log_reg_model.fit(X_train, Y_train)
+# Convert datasets to DMatrix format
+X_train_dmatrix = xgb.DMatrix(X_train, label=Y_train)
+X_val_dmatrix = xgb.DMatrix(X_val, label=Y_val)
+X_test_dmatrix = xgb.DMatrix(X_test)
 
-Y_submission = log_reg_model.predict(scaler.transform(test_combined_data_imputed[top_features]))
-
-
+# Train the model using the best parameters
+num_boost_round = best_params['n_estimators']  # Set the number of boosting rounds from the best parameters
+bst = xgb.train(best_params, X_train_dmatrix, num_boost_round=num_boost_round, evals=[(X_val_dmatrix, 'validation')], verbose_eval=True)
 
 # Make predictions on training set
-Y_pred_train = log_reg_model.predict(X_train)
+Y_pred_train = bst.predict(X_train_dmatrix)
+
+# Convert probabilities to binary predictions
+Y_pred_train_binary = [1 if pred > 0.5 else 0 for pred in Y_pred_train]
+
+print('Train')
+GenerateMetrics(Y_train, Y_pred_train_binary)
+
 # Make predictions on validation set
-Y_pred_val = log_reg_model.predict(X_val)
+Y_pred_val = bst.predict(X_val_dmatrix)
+Y_pred_val_binary = [1 if pred > 0.5 else 0 for pred in Y_pred_val]
 
-# Calculate accuracy and F1 score for training set
-accuracy_train = accuracy_score(Y_train, Y_pred_train)
-f1_train = f1_score(Y_train, Y_pred_train)
+print('Val')
+GenerateMetrics(Y_val, Y_pred_val_binary)
 
-# Calculate accuracy and F1 score for validation set
-accuracy_val = accuracy_score(Y_val, Y_pred_val)
-f1_val = f1_score(Y_val, Y_pred_val)
+# After making predictions on the test set
+Y_submission = bst.predict(X_test_dmatrix)
 
-# Print results
-print("Training Accuracy: ", accuracy_train)
-print("Training F1 Score: ", f1_train)
-#print("Validation Accuracy: ", accuracy_val)
-#print("Validation F1 Score: ", f1_val)
+# Clean up the TransactionID values
+transaction_ids = transaction_ids.astype(float).astype('Int32')  # Convert to float first, then to Int32
 
-# Creating a DataFrame for submission
+# Create submission DataFrame
 submission = pd.DataFrame({
-    'TransactionID': test_filtered_transaction_data['TransactionID'],  # Ensure this column exists
-    'isFraud': Y_submission
+    'TransactionID': transaction_ids,  # Use the cleaned TransactionID
+    'isFraud': [1 if pred > 0.5 else 0 for pred in Y_submission]
 })
 
 # Save the predictions into a CSV file for submission
-submission.to_csv('C:/Users/carlo/.vscode/Repos/Kaggle Models/Kaggle Data/IEEE-CIS Fraud Detection Data/submission.csv', index=False)
+submission.to_csv(root_path + 'submission.csv', index=False)

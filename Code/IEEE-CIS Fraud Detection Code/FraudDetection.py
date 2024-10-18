@@ -2,10 +2,13 @@
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
+import cupy as cp
+import xgboost as xgb
 
 # Load data
 def SetPaths(): # takes no parameters, returns 5 values, root_path, train_identity_path, train_transaction_path, test_identity_path, test_transaction_path
@@ -19,7 +22,6 @@ def SetPaths(): # takes no parameters, returns 5 values, root_path, train_identi
 # Fill empty columns with NaN
 def fill_empty_columns(df):
     return df.fillna(np.nan)
-
 
 # Read CSV files into DataFrames and clean them
 def CreateDataFrames(train_identity_path, train_transaction_path, test_identity_path, test_transaction_path): # takes 4 paths to csv and returns 2 concated dataframes
@@ -40,16 +42,9 @@ def CreateDataFrames(train_identity_path, train_transaction_path, test_identity_
     test_identity_data.columns = test_identity_data.columns.str.replace('_', '-', regex=False)
     test_transaction_data.columns = test_transaction_data.columns.str.replace('_', '-', regex=False)
 
-    # Filter identity and transaction data
-    train_filtered_identity_data = train_identity_data[train_identity_data['TransactionID'].isin(train_transaction_data['TransactionID'])]
-    test_filtered_identity_data = test_identity_data[test_identity_data['TransactionID'].isin(test_transaction_data['TransactionID'])]
-
-    train_filtered_transaction_data = train_transaction_data[train_transaction_data['TransactionID'].isin(train_filtered_identity_data['TransactionID'])]
-    test_filtered_transaction_data = test_transaction_data[test_transaction_data['TransactionID'].isin(test_filtered_identity_data['TransactionID'])]
-
     # Combine identity and transaction data for train and test
-    train_combined_data = pd.merge(train_filtered_transaction_data, train_filtered_identity_data, on='TransactionID', how='outer')
-    test_combined_data = pd.merge(test_filtered_transaction_data, test_filtered_identity_data, on='TransactionID', how='outer')
+    train_combined_data = pd.merge(train_transaction_data, train_identity_data, on='TransactionID', how='outer')
+    test_combined_data = pd.merge(test_transaction_data, test_identity_data, on='TransactionID', how='outer')
 
     # Convert all data to numeric (this will handle NaNs)
     train_combined_data = train_combined_data.apply(pd.to_numeric, errors='coerce')
@@ -127,6 +122,24 @@ def LogRegInit(): # takes no params and returns model
     )
     return log_reg_model
 
+# initilizes params
+def GBXParamsInit(): # takes no params and params
+    params = {
+        'tree_method': 'hist',    # Use GPU for training (faster for large datasets)
+        'device': 'cuda',
+        'objective': 'binary:logistic',  # Define the objective function, e.g., for binary classification
+        'eval_metric': 'logloss',     # Evaluation metric, e.g., log loss for classification
+        'learning_rate': 0.3,         # Learning rate (also called eta), default is 0.3
+        'max_depth': 6,               # Maximum depth of the trees (default is 6)
+        'min_child_weight': 1,        # Minimum sum of instance weight (hessian) needed in a child
+        'subsample': 0.8,             # Subsample ratio of the training instances (default is 1)
+        'colsample_bytree': 0.8,      # Subsample ratio of columns when constructing each tree (default is 1)
+        'lambda': 1,                  # L2 regularization term on weights (default is 1)
+        'alpha': 0,                   # L1 regularization term on weights (default is 0)
+        'random_state': 42            # Random seed for reproducibility
+    }
+    return params
+
 # Generate scoring metrics
 def GenerateMetrics(TrueLabel, PredLabel): # takes 2 params, being the true labels and the generated labels, prints scores to screen returns nothing
     f1 = f1_score(TrueLabel, PredLabel)
@@ -134,11 +147,12 @@ def GenerateMetrics(TrueLabel, PredLabel): # takes 2 params, being the true labe
 
     print('F1 Score:', f1)
     print('Accuracy:', accuracy)
+    print('')
 
 # Generate Submission CSV
-def GenerateSubmission(root_path): # takes root path and creates submission csv based off the root
+def GenerateSubmission(root_path, model, X_test): # takes root path and creates submission csv based off the root
     # Assuming test_combined_data_imputed is your test set
-    Y_submission = log_reg_model.predict(X_test)
+    Y_submission = model.predict(X_test)
 
     # Creating a DataFrame for submission
     submission = pd.DataFrame({
@@ -149,7 +163,6 @@ def GenerateSubmission(root_path): # takes root path and creates submission csv 
     # Save the predictions into a CSV file for submission
     submission.to_csv(root_path + 'submission.csv', index=False)
 
-
 # Create basic paths
 root_path, train_identity_path, train_transaction_path, test_identity_path, test_transaction_path = SetPaths()
 
@@ -158,24 +171,3 @@ train_combined_data, test_combined_data = CreateDataFrames(train_identity_path, 
 
 # Create train val test splits
 X_train, X_val, Y_train, Y_val, X_test = TrainValTestSplit(train_combined_data, test_combined_data)
-
-# Initilize model
-log_reg_model = LogRegInit()
-
-# Fit the model
-log_reg_model.fit(X_train, Y_train)
-
-# Predict
-Y_pred = log_reg_model.predict(X_train)
-
-# Evaluate
-GenerateMetrics(Y_train, Y_pred)
-
-# Predict
-Y_pred = log_reg_model.predict(X_val)
-
-# Evaluate
-GenerateMetrics(Y_val, Y_pred)
-
-# Create Submission
-GenerateSubmission(root_path)
